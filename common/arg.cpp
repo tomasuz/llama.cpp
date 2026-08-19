@@ -3531,6 +3531,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_CACHE_REUSE"));
     add_opt(common_arg(
+        {"--moe-stats"},
+        string_format("collect per-layer MoE expert-routing statistics, exposed at /moe-stats (default: %s)", params.moe_stats ? "enabled" : "disabled"),
+        [](common_params & params) {
+            params.moe_stats = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_MOE_STATS"));
+    add_opt(common_arg(
         {"--metrics"},
         string_format("enable prometheus compatible metrics endpoint (default: %s)", params.endpoint_metrics ? "enabled" : "disabled"),
         [](common_params & params) {

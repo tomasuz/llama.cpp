@@ -1,6 +1,7 @@
 #include "server-context.h"
 #include "server-chat.h"
 #include "server-common.h"
+#include "moe-stats.h"
 #include "server-http.h"
 #include "server-task.h"
 #include "server-queue.h"
@@ -826,11 +827,19 @@ public:
         metrics.reset_bucket();
     }
 
+    // MoE expert-routing histogram, collected only when --moe-stats is given.
+    // Public because the /moe-stats route reads it through server_routes::ctx_server.
+    // Its own mutex makes snapshot() safe to call while inference is running, so it
+    // does not need the task queue the other endpoints go through.
+    // Must outlive the context: referenced via cparams.cb_eval_user_data.
+    common_moe_stats moe_stats;
+
 private:
     // note: accessing these fields outside of this class is not thread-safe
     // use server_context methods instead
 
     common_params params_base;
+
 
     // note: keep these alive - they determine the lifetime of the model, context, etc.
     common_init_result_ptr llama_init;
@@ -1100,6 +1109,11 @@ private:
         {
             params_base.load_progress_callback = load_progress_callback;
             params_base.load_progress_callback_user_data = &load_progress_text;
+        }
+
+        if (params_base.moe_stats) {
+            params_base.cb_eval           = common_moe_stats_cb_eval;
+            params_base.cb_eval_user_data = &moe_stats;
         }
 
         llama_init = common_init_from_params(params_base);
@@ -4639,6 +4653,45 @@ void server_routes::init_routes() {
             res->data = res_task->to_metrics();
         }
 
+        return res;
+    };
+
+    // Per-layer MoE expert-routing histogram. Read straight from the collector
+    // instead of going through the metrics task queue: the snapshot is mutex
+    // protected and needs no inference-thread cooperation, so a scrape cannot
+    // stall decoding.
+    this->get_moe_stats = [this](const server_http_req &) {
+        auto res = create_response();
+
+        if (!params.moe_stats) {
+            res->error(format_error_response(
+                "This server does not collect MoE statistics. Start it with `--moe-stats`",
+                ERROR_TYPE_NOT_SUPPORTED));
+            return res;
+        }
+
+        const auto layers = ctx_server.moe_stats.snapshot();
+
+        json jlayers = json::array();
+        for (const auto & lc : layers) {
+            jlayers.push_back({
+                {"layer",           lc.il},
+                {"activations",     lc.total},
+                {"n_expert_seen",   lc.experts.size()},
+                {"top16_share",     ctx_server.moe_stats.concentration(lc.il, 16)},
+                {"experts",         lc.experts},
+            });
+        }
+
+        json out = {
+            {"observed_tensors", ctx_server.moe_stats.observed()},
+            {"n_layers",         layers.size()},
+            {"layers",           jlayers},
+        };
+
+        res->content_type = "application/json; charset=utf-8";
+        res->status = 200;
+        res->data = out.dump();
         return res;
     };
 
