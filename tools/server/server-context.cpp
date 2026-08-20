@@ -4683,10 +4683,27 @@ void server_routes::init_routes() {
             });
         }
 
+        // Per-weight-tensor view: name matches --override-tensor patterns,
+        // device says which GPU currently holds it, time_ms is comparable
+        // between tensors (it includes the same observation overhead in each).
+        json jtensors = json::array();
+        for (const auto & ts : ctx_server.moe_stats.tensors()) {
+            jtensors.push_back({
+                {"tensor",     ts.name},
+                {"device",     ts.device},
+                {"layer",      ts.il},
+                {"bytes",      ts.bytes},
+                {"calls",      ts.calls},
+                {"time_ms",    ts.time_ms},
+                {"ms_per_call", ts.calls ? ts.time_ms / (double) ts.calls : 0.0},
+            });
+        }
+
         json out = {
             {"observed_tensors", ctx_server.moe_stats.observed()},
             {"n_layers",         layers.size()},
             {"layers",           jlayers},
+            {"tensors",          jtensors},
         };
 
         res->content_type = "application/json; charset=utf-8";

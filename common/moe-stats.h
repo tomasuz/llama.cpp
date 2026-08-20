@@ -1,27 +1,34 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 struct ggml_tensor;
 
-// Collects MoE expert-routing statistics from the compute graph.
+// Collects two kinds of MoE statistics from the compute graph.
 //
-// The router's top-k selection is materialised as an I32 tensor of shape
-// [n_expert_used, n_tokens] that llm_graph_context tags as "ffn_moe_topk"; the
-// default graph callback then renames it to "ffn_moe_topk-<il>". Every element
-// is the index of an expert that was activated for one token, so counting them
-// yields a per-layer activation histogram without touching the routing code.
+// 1. Expert routing histogram, per layer.
+//    The router's top-k selection is materialised as an I32 tensor of shape
+//    [n_expert_used, n_tokens] tagged "ffn_moe_topk"; each element is an
+//    activated expert index, so counting them gives the histogram.
 //
-// Intended to be installed as a ggml_backend_sched_eval_callback:
+// 2. Per-weight-tensor placement and cost.
+//    The expert matmuls (ffn_moe_up / gate / down) take the big weight tensor
+//    as src[0]. That tensor's name is exactly what --override-tensor matches
+//    on, and its buffer tells which device holds it. Recording name, device,
+//    size and accumulated time therefore produces the table needed to decide
+//    an -ot layout, which the routing histogram alone cannot: all experts of
+//    a layer live in ONE tensor ([n_embd, n_ff, n_expert]), so -ot can never
+//    address an individual expert.
 //
-//     common_moe_stats stats;
-//     params.cb_eval           = common_moe_stats_cb_eval;
-//     params.cb_eval_user_data = &stats;
-//
-// The callback only requests data for tensors it actually needs, so graphs
-// without MoE layers cost one string comparison per node.
+// Timing caveat: installing any eval callback makes the scheduler evaluate the
+// graph in chunks instead of one split at a time, and the measured interval
+// covers the chunk ending at the observed node rather than that node alone.
+// The overhead is therefore present in every sample; treat the numbers as
+// comparable to each other, not as absolute kernel times.
 struct common_moe_stats {
     common_moe_stats();
     ~common_moe_stats();
@@ -31,23 +38,27 @@ struct common_moe_stats {
 
     struct layer_counts {
         int                   il = -1;
-        std::vector<uint64_t> experts;      // experts[expert_id] = activation count
-        uint64_t              total = 0;    // sum of experts[], i.e. tokens * n_expert_used
+        std::vector<uint64_t> experts;    // experts[expert_id] = activation count
+        uint64_t              total = 0;
     };
 
-    // Snapshot of everything collected so far, ordered by layer index.
-    // Safe to call from another thread while inference is running.
-    std::vector<layer_counts> snapshot() const;
+    struct tensor_stats {
+        std::string name;                 // weight tensor, e.g. blk.19.ffn_up_exps.weight
+        std::string device;               // buffer holding it, e.g. Vulkan1
+        size_t      bytes    = 0;
+        uint64_t    calls    = 0;
+        double      time_ms  = 0.0;       // accumulated, includes observation overhead
+        int         il       = -1;
+    };
 
-    // Fraction of activations that went to the busiest `top_n` experts of a
-    // layer. 1.0 means fully concentrated, top_n/n_expert means perfectly even.
-    // Returns -1.0 if the layer has not been seen yet.
+    std::vector<layer_counts> snapshot() const;
+    std::vector<tensor_stats> tensors()  const;
+
+    // Share of activations captured by the busiest `top_n` experts of a layer.
+    // -1.0 if the layer has not been seen.
     double concentration(int il, size_t top_n) const;
 
     void reset();
-
-    // Number of tensors observed. Useful to tell "no MoE in this model" from
-    // "callback was never installed".
     uint64_t observed() const;
 
     struct impl;
