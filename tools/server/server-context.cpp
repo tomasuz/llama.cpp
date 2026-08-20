@@ -1111,7 +1111,10 @@ private:
             params_base.load_progress_callback_user_data = &load_progress_text;
         }
 
-        if (params_base.moe_stats) {
+        if (!params_base.moe_stats.empty()) {
+            moe_stats.set_mode(params_base.moe_stats == "full"
+                               ? COMMON_MOE_STATS_FULL
+                               : COMMON_MOE_STATS_PLACEMENT);
             params_base.cb_eval           = common_moe_stats_cb_eval;
             params_base.cb_eval_user_data = &moe_stats;
         }
@@ -4663,9 +4666,9 @@ void server_routes::init_routes() {
     this->get_moe_stats = [this](const server_http_req &) {
         auto res = create_response();
 
-        if (!params.moe_stats) {
+        if (params.moe_stats.empty()) {
             res->error(format_error_response(
-                "This server does not collect MoE statistics. Start it with `--moe-stats`",
+                "This server does not collect MoE statistics. Start it with `--moe-stats placement|full`",
                 ERROR_TYPE_NOT_SUPPORTED));
             return res;
         }
@@ -4700,6 +4703,7 @@ void server_routes::init_routes() {
         }
 
         json out = {
+            {"mode",             params.moe_stats},
             {"observed_tensors", ctx_server.moe_stats.observed()},
             {"n_layers",         layers.size()},
             {"layers",           jlayers},

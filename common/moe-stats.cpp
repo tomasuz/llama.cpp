@@ -19,6 +19,7 @@ struct common_moe_stats::impl {
     std::map<int, layer_counts> layers;
     std::map<std::string, tensor_stats> tensors;   // keyed by weight tensor name
     uint64_t                    observed = 0;
+    common_moe_stats_mode       mode = COMMON_MOE_STATS_PLACEMENT;
     std::vector<int32_t>        buf;
 
     // Set when an observed node is announced (ask=true) and consumed when the
@@ -78,6 +79,16 @@ void common_moe_stats::reset() {
     pimpl->tensors.clear();
     pimpl->observed = 0;
     pimpl->pending  = nullptr;
+}
+
+void common_moe_stats::set_mode(common_moe_stats_mode m) {
+    std::lock_guard<std::mutex> lock(pimpl->mtx);
+    pimpl->mode = m;
+}
+
+common_moe_stats_mode common_moe_stats::mode() const {
+    std::lock_guard<std::mutex> lock(pimpl->mtx);
+    return pimpl->mode;
 }
 
 uint64_t common_moe_stats::observed() const {
@@ -143,13 +154,38 @@ bool common_moe_stats_cb_eval(struct ggml_tensor * t, bool ask, void * user_data
     // means no device->host copy and no chunk boundary here, so uninteresting
     // nodes cost one name comparison.
     if (ask) {
-        if (!moe_is_interesting(t)) {
-            return false;
+        const ggml_tensor * w = moe_expert_weight(t);
+
+        // src[0] metaduomenys (vardas, buferis, dydis) priskirti dar modelio
+        // ikelimo metu, tad juos galima nuskaityti CIA, negrazinant true.
+        // Grazinus false gabalo riba nesukuriama -> jokios sinchronizacijos.
+        if (w) {
+            std::lock_guard<std::mutex> lock(pimpl->mtx);
+            auto & ts = pimpl->tensors[w->name];
+            if (ts.calls == 0 && ts.name.empty()) {
+                ts.name   = w->name;
+                ts.bytes  = ggml_nbytes(w);
+                ts.il     = moe_layer_from_weight_name(w->name);
+                ts.device = w->buffer ? ggml_backend_buffer_name(w->buffer) : "unknown";
+                pimpl->observed++;
+            }
+            if (pimpl->mode != COMMON_MOE_STATS_FULL) {
+                return false;
+            }
+            pimpl->pending    = t;
+            pimpl->pending_t0 = std::chrono::steady_clock::now();
+            return true;
         }
-        std::lock_guard<std::mutex> lock(pimpl->mtx);
-        pimpl->pending    = t;
-        pimpl->pending_t0 = std::chrono::steady_clock::now();
-        return true;
+
+        // topk reikalauja REALIU reiksmiu is GPU, tad be sinchronizacijos
+        // ju gauti negalima. Renkam tik FULL rezime.
+        if (pimpl->mode == COMMON_MOE_STATS_FULL && moe_is_topk_tensor(t)) {
+            std::lock_guard<std::mutex> lock(pimpl->mtx);
+            pimpl->pending    = t;
+            pimpl->pending_t0 = std::chrono::steady_clock::now();
+            return true;
+        }
+        return false;
     }
 
     // Phase 2: the node has been computed.
@@ -165,16 +201,9 @@ bool common_moe_stats_cb_eval(struct ggml_tensor * t, bool ask, void * user_data
 
     // --- per-weight-tensor placement and cost ---
     if (const ggml_tensor * w = moe_expert_weight(t)) {
-        auto & ts = pimpl->tensors[w->name];
-        if (ts.calls == 0) {
-            ts.name   = w->name;
-            ts.bytes  = ggml_nbytes(w);
-            ts.il     = moe_layer_from_weight_name(w->name);
-            ts.device = w->buffer ? ggml_backend_buffer_name(w->buffer) : "unknown";
-        }
+        auto & ts = pimpl->tensors[w->name];   // statiniai laukai jau uzpildyti ask fazeje
         ts.calls++;
         ts.time_ms += elapsed_ms;
-        pimpl->observed++;
         return true;
     }
 

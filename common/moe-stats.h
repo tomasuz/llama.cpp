@@ -29,6 +29,25 @@ struct ggml_tensor;
 // covers the chunk ending at the observed node rather than that node alone.
 // The overhead is therefore present in every sample; treat the numbers as
 // comparable to each other, not as absolute kernel times.
+// Rinkimo rezimas. Skirtumas esminis, nes ggml_backend_sched po KIEKVIENO
+// gabalo, kuris baigiasi stebimu mazgu, daro ggml_backend_synchronize().
+//
+//   PLACEMENT  ask fazeje nuskaitomi src[0] metaduomenys (vardas, irenginys,
+//              dydis) ir VISADA grazinama false. Gabalo riba nesukuriama,
+//              sinchronizacijos nera, GPU duomenys neperkeliami. Kaina ~0.
+//              To uztenka -ot sprendimams.
+//
+//   FULL       papildomai renkama ekspertu histograma ir laikas. Tam butina
+//              grazinti true, o tai sukelia sinchronizacija kiekvienam
+//              stebimam mazgui. Ismatuota kaina: 18,6 % pralaidumo.
+//              Laikui matuoti pigiau GGML_VK_PERF_LOGGER=1 (7,8 %), nes jis
+//              naudoja Vulkan query pool ir sinchronizuoja karta per grafa.
+enum common_moe_stats_mode {
+    COMMON_MOE_STATS_OFF = 0,
+    COMMON_MOE_STATS_PLACEMENT,
+    COMMON_MOE_STATS_FULL,
+};
+
 struct common_moe_stats {
     common_moe_stats();
     ~common_moe_stats();
@@ -60,6 +79,9 @@ struct common_moe_stats {
 
     void reset();
     uint64_t observed() const;
+
+    void set_mode(common_moe_stats_mode m);
+    common_moe_stats_mode mode() const;
 
     struct impl;
     std::unique_ptr<impl> pimpl;

@@ -653,7 +653,7 @@ struct common_params {
     bool endpoint_slots   = true;
     bool endpoint_props   = false; // only control POST requests, not GET
     bool endpoint_metrics = false;
-    bool moe_stats       = false;  // collect MoE expert-routing histogram (see common/moe-stats.h)
+    std::string moe_stats;         // "", "placement" arba "full" (zr. common/moe-stats.h)
 
     // enable built-in tools
     std::vector<std::string> server_tools;

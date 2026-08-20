@@ -3531,10 +3531,18 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_CACHE_REUSE"));
     add_opt(common_arg(
-        {"--moe-stats"},
-        string_format("collect per-layer MoE expert-routing statistics, exposed at /moe-stats (default: %s)", params.moe_stats ? "enabled" : "disabled"),
-        [](common_params & params) {
-            params.moe_stats = true;
+        {"--moe-stats"}, "MODE",
+        "collect MoE statistics, exposed at /moe-stats. MODE is:\n"
+        "  placement - tensor name, device and size only; read in the callback's ask phase\n"
+        "              without requesting data, so no synchronization is forced (default)\n"
+        "  full      - adds the expert histogram and per-tensor timing, which requires\n"
+        "              returning true per node and costs ~19% throughput. For timing alone\n"
+        "              GGML_VK_PERF_LOGGER=1 is cheaper (~8%).",
+        [](common_params & params, const std::string & value) {
+            if (value != "placement" && value != "full") {
+                throw std::invalid_argument("--moe-stats must be 'placement' or 'full'");
+            }
+            params.moe_stats = value;
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_MOE_STATS"));
     add_opt(common_arg(
