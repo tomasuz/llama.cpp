@@ -176,9 +176,13 @@
 
 #define __CUDA_ARCH__ 1300
 
-#if defined(__gfx900__) || defined(__gfx906__)
+// gfx909 (Raven2) and gfx90c (Renoir/Cezanne/Barcelo) are Vega-class (GCN5) integrated GPUs.
+// They must be listed here explicitly: without them the device side defines neither GCN nor
+// CDNA nor RDNA, while the host side classifies them as GCN, so host and device disagree about
+// kernel launch geometry (e.g. mmvq get_device_table_id) and the results are wrong.
+#if defined(__gfx900__) || defined(__gfx906__) || defined(__gfx909__) || defined(__gfx90c__)
 #define GCN5
-#endif // defined(__gfx900__) || defined(__gfx906__)
+#endif // defined(__gfx900__) || defined(__gfx906__) || defined(__gfx909__) || defined(__gfx90c__)
 
 #if defined(__gfx803__)
 #define GCN4
